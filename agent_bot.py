@@ -1,32 +1,34 @@
 import os
 from dotenv import load_dotenv
+
 from anthropic import Anthropic
 
 load_dotenv()
 client = Anthropic()
 
-# ---------- 1) 定义两个工具 ----------
+
+# ---------- 1) Define tools ----------
 tools = [
     {
         "name": "search_hotels",
-        "description": "查询某个城市、每晚不超过指定预算的酒店，返回酒店名、区域、每晚价格(英镑)。",
+        "description":"Query hotels in a city within a specified budget per night, returning hotel name, area, and price per night (in GBP).",
         "input_schema": {
             "type": "object",
             "properties": {
-                "city": {"type": "string", "description": "城市名，如 'London'"},
-                "max_price_per_night": {"type": "number", "description": "每晚最高预算(英镑)"},
+                "city": {"type": "string", "description": "city name, e.g., 'London'"},
+                "max_price_per_night": {"type": "number", "description": "maximum budget per night (in GBP)"},
             },
             "required": ["city"],
         },
     },
     {
         "name": "search_restaurants",
-        "description": "查询某个城市、某个区域的餐馆，返回餐馆名、区域、菜系、人均价格(英镑)。",
+        "description": "Query restaurants in a city within a specified area, returning restaurant name, area, cuisine, and average price (in GBP).",
         "input_schema": {
             "type": "object",
             "properties": {
-                "city": {"type": "string", "description": "城市名，如 'London'"},
-                "area": {"type": "string", "description": "区域名，如 'Camden'，可选"},
+                "city": {"type": "string", "description": "city name, e.g., 'London'"},
+                "area": {"type": "string", "description": "area name, e.g., 'Camden', optional"},
             },
             "required": ["city"],
         },
@@ -34,32 +36,32 @@ tools = [
 
     {
         "name": "submit_plan",
-        "description": "提交最终选定的旅行方案，包含选中的酒店、餐馆及各自价格，用于校验是否超预算。",
+        "description": "Submit the final selected travel plan, including the chosen hotels, restaurants, and their respective prices, for budget verification.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "budget": {"type": "number", "description": "用户的总预算(英镑)，从用户需求中提取"},
+                "budget": {"type": "number", "description": "The user's total budget (in GBP), extracted from the user's request"},
                 "hotels": {
                     "type": "array",
-                    "description": "选定的酒店列表，支持多段住宿（不同酒店住不同晚数）",
+                    "description": "The list of selected hotels, supporting multi-segment stays (staying at different hotels for different numbers of nights)",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": {"type": "string", "description": "酒店名称"},
-                            "price_per_night": {"type": "number", "description": "该酒店每晚价格(英镑)"},
-                            "nights": {"type": "number", "description": "在这家酒店住的晚数"},
+                            "name": {"type": "string", "description": "hotel name"},
+                            "price_per_night": {"type": "number", "description": "price per night (in GBP)"},
+                            "nights": {"type": "number", "description": "number of nights stayed at this hotel"},
                         },
                         "required": ["name", "price_per_night", "nights"],
                     },
                 },
                 "restaurants": {
                     "type": "array",
-                    "description": "选定的餐馆列表",
+                    "description": "The list of selected restaurants",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": {"type": "string", "description": "餐馆名称"},
-                            "avg_price": {"type": "number", "description": "该餐馆人均价格(英镑)"},
+                            "name": {"type": "string", "description": "restaurant name"},
+                            "avg_price": {"type": "number", "description": "average price per person (in GBP)"},
                         },
                         "required": ["name", "avg_price"],
                     },
@@ -70,7 +72,8 @@ tools = [
 },
 ]
 
-# ---------- 2) 两个工具的真实实现（假数据）----------
+# ---------- 2) Tool implementations (mock data) ----------
+# name -> function mapping, used to dispatch tool calls in the loop
 def search_hotels(city, max_price_per_night=None):
     hotels = [
         {"name": "Bloomsbury Inn", "area": "Bloomsbury", "price_per_night": 120},
@@ -94,32 +97,32 @@ def search_restaurants(city, area=None):
     return restaurants
 
 def evaluate_plan(plan, budget):
-    """纯计算：把方案总价加出来，和预算比。返回 (是否通过, 反馈信息)。"""
-    # 住宿总价：遍历每家酒店，各自 price_per_night × nights，累加
+    """Pure calculation: sum up the total cost of the plan and compare it with the budget. Return (whether it passes, feedback message)."""
+    # Total accommodation cost: iterate through each hotel, multiply price_per_night by nights, and accumulate
     hotel_cost = sum(h["price_per_night"] * h["nights"] for h in plan["hotels"])
-    # 餐饮总价：遍历每家餐馆，把 avg_price 累加
+    # Total food cost: iterate through each restaurant and accumulate avg_price
     food_cost = sum(r["avg_price"] for r in plan["restaurants"])
     total = hotel_cost + food_cost
 
     if total <= budget:
-        return True, f"方案总价 £{total}，在预算 £{budget} 内，通过。"
+        return True, f"Total plan cost £{total}, within the budget £{budget}, passed."
     else:
         over = total - budget
-        return False, f"方案总价 £{total}，超出预算 £{budget} 共 £{over}，请改用更便宜的酒店或减少餐馆。"
+        return False, f"Total plan cost £{total}, exceeds the budget £{budget} by £{over}. Please choose cheaper hotels or reduce the number of restaurants."
 
-# 一个映射：名字 -> 真实函数，循环里用它来分派
+# A mapping: name -> actual function, used to dispatch tool calls in the loop
 TOOL_FUNCTIONS = {
     "search_hotels": search_hotels,
     "search_restaurants": search_restaurants,
 }
 
-# ---------- 3) 用户请求 ----------
+# ---------- 3) User request ----------
 messages = [
-    {"role": "user", "content": "我想去伦敦玩3天,帮我规划酒店和餐馆,总预算500英镑。请在选定方案后提交,确保不超预算。"}
-    #{"role": "user", "content": "我想去伦敦玩3天,帮我规划酒店和餐馆。"}
+    {"role": "user", "content": "I want to visit London for 3 days, help me plan hotels and restaurants, with a total budget of 500 GBP. Please submit the plan after selection, ensuring it stays within budget."}
+    #{"role": "user", "content": "I want to visit London for 3 days, help me plan hotels and restaurants."}
 ]
 
-# ---------- 4) Agent Loop：核心变化在这里 ----------
+# ---------- 4) Agent loop ---------
 turn = 0
 max_turns = 5
 
@@ -130,63 +133,63 @@ while turn < max_turns:
         model="claude-sonnet-4-6",
         max_tokens=1000,
         system=(
-            "你是一个旅行规划助手。请先用 search_hotels 和 search_restaurants 搜集信息,"
-            "选定方案后,必须调用 submit_plan 提交,由系统校验是否超预算。"
-            "如果校验反馈超预算,请调整方案(换更便宜的酒店或减少餐馆)后重新提交,直到通过为止。"
-            "校验通过后,再把最终方案整理成清晰的中文回复给用户。"
-            "如果用户没有明确预算,请先询问预算后再规划。"
+            "You are a travel planning assistant. Please use search_hotels and search_restaurants to gather information,"
+            "and after selecting a plan, you must call submit_plan to submit it for budget validation."
+            "If the validation feedback indicates exceeding the budget, please adjust the plan (choose cheaper hotels or reduce the number of restaurants) and resubmit until it passes."
+            "After passing validation, organize the final plan into a clear English response for the user."
+            "If the user does not specify a budget, please ask for it before planning."
+
         ),
         tools=tools,
         messages=messages,
     )
     print("stop_reason:", response.stop_reason)
 
-    # 模型不再需要工具了 → 打印最终回答，跳出循环
+   # Model no longer needs tools -> print final answer and break
     if response.stop_reason != "tool_use":
         for block in response.content:
             if block.type == "text":
-                print("\n最终回答：\n", block.text)
+                print("\nfinal answer:\n", block.text)
         break
 
-    # 模型要调工具 → 把它的这轮回复存进对话历史
+    # Model wants to call tools -> append its turn to conversation history
     messages.append({"role": "assistant", "content": response.content})
 
-    # 执行它这一轮请求的所有工具调用，收集结果
+    # Execute all tool calls from this turn and collect results
     tool_results = []
 
     for block in response.content:
         if block.type == "tool_use":
             if block.name == "submit_plan":
-                print("  → submit_plan 被调用了！开始校验预算...")   # 加这行
+                print("  → submit_plan was called! Starting budget validation...")   
                 plan = block.input
-                budget = plan.get("budget")   # 用 .get，缺了返回 None，不会 KeyError
+                budget = plan.get("budget")   #use .get() so a missing key returns None instead of raising KeyError
                 if budget is None:
-                    content = "缺少预算信息，无法校验。请先向用户确认总预算。"
+                    content = "Missing budget information, unable to validate. Please confirm the total budget with the user."
                 else:
-                    print(f"  → 模型提取的预算: £{budget}")
+                    print(f"  → Model extracted budget: £{budget}")
                     passed, feedback = evaluate_plan(plan, budget)
-                    print(f"  → 校验结果: {feedback}")                    # 加这行
-                    content = feedback
+                    print(f"  → Validation result: {feedback}")                    
 
             else:
-                # 这是"查数据"类工具 → 照旧执行函数
+                # This is a "data lookup" type tool → execute function as before
                 try:
                     func = TOOL_FUNCTIONS[block.name]
                     result = func(**block.input)
                     content = str(result)
                 except Exception as e:
-                    content = f"工具调用出错: {e}"
+                    content = f"Tool call error: {e}"
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
                 "content": content,
             })
 
-    # 把工具结果喂回对话，进入下一轮循环
+    # Feed tool results back into the conversation for the next turn
     messages.append({"role": "user", "content": tool_results})
     turn += 1
-    print(f"\n=== 进入第 {turn} 轮对话 ===\n")
+    print(f"\n=== Entering turn {turn} ===\n")
 
 else:
-    print("⚠️ 已达到最大轮数上限，任务可能未完成，请简化需求后重试。")
-    
+    print("⚠️ Reached maximum turn limit, task may not be completed. Please simplify your request and try again.")
+
