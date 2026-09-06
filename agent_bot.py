@@ -110,6 +110,25 @@ def evaluate_plan(plan, budget):
         over = total - budget
         return False, f"Total plan cost £{total}, exceeds the budget £{budget} by £{over}. Please choose cheaper hotels or reduce the number of restaurants."
 
+def review_plan(plan_text):
+    """Independent LLM reviewer that assesses plan quality (subjective reasonableness),
+    kept separate from the main agent. Returns (passed, review_comments)."""
+    review_response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=500,
+        system=(
+            "You are a critical travel plan reviewer. Assess whether the plan is "
+            "well-balanced and reasonable — consider location mix (are the hotel and "
+            "restaurants sensibly located?), spending balance, and overall experience. "
+            "If the plan is good, reply with exactly 'APPROVED'. "
+            "Otherwise, list the specific issues concisely so they can be fixed."
+        ),
+        messages=[{"role": "user", "content": f"Review this travel plan:\n\n{plan_text}"}],
+    )
+    review_text = review_response.content[0].text
+    passed = "APPROVED" in review_text     # simple signal-word check
+    return passed, review_text
+
 # A mapping: name -> actual function, used to dispatch tool calls in the loop
 TOOL_FUNCTIONS = {
     "search_hotels": search_hotels,
@@ -124,11 +143,14 @@ messages = [
 
 # ---------- 4) Agent loop ---------
 turn = 0
-max_turns = 5
+max_turns = 8
+last_plan = None
+review_attempts = 0
+max_reviews = 2        # Limit the number of review cycles to avoid infinite loops
 
 
 while turn < max_turns:
-
+    turn +=1
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1000,
@@ -138,6 +160,7 @@ while turn < max_turns:
             "If the validation feedback indicates exceeding the budget, please adjust the plan (choose cheaper hotels or reduce the number of restaurants) and resubmit until it passes."
             "After passing validation, organize the final plan into a clear English response for the user."
             "If the user does not specify a budget, please ask for it before planning."
+            "Be strict: unless the plan is truly excellent, you must list at least one concrete issue and NOT reply APPROVED."
 
         ),
         tools=tools,
@@ -147,15 +170,33 @@ while turn < max_turns:
 
    # Model no longer needs tools -> print final answer and break
     if response.stop_reason != "tool_use":
+        plan_text = ""
         for block in response.content:
             if block.type == "text":
-                print("\nfinal answer:\n", block.text)
-        break
+                plan_text += block.text + "\n"
+        passed, review_text = review_plan(plan_text)
+        last_plan = plan_text 
+        if passed:
+            print("\nfinal answer:\n", plan_text)
+            break
+        else:
+            review_attempts += 1
+            if review_attempts >= max_reviews:
+                # If the review limit is reached, show the current plan and exit
+                print("\nfinal answer (review limit reached, showing current plan):\n", plan_text)
+                break
+
+            print("\n  → Reviewer flagged issues, revising...\n", review_text)
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": f"A reviewer raised these issues, please revise the plan:\n{review_text}"})
+            
+            continue
+
 
     # Model wants to call tools -> append its turn to conversation history
-    messages.append({"role": "assistant", "content": response.content})
 
     # Execute all tool calls from this turn and collect results
+    messages.append({"role": "assistant", "content": response.content}) 
     tool_results = []
 
     for block in response.content:
@@ -169,7 +210,8 @@ while turn < max_turns:
                 else:
                     print(f"  → Model extracted budget: £{budget}")
                     passed, feedback = evaluate_plan(plan, budget)
-                    print(f"  → Validation result: {feedback}")                    
+                    print(f"  → Validation result: {feedback}")
+                    content = feedback                    
 
             else:
                 # This is a "data lookup" type tool → execute function as before
@@ -187,9 +229,12 @@ while turn < max_turns:
 
     # Feed tool results back into the conversation for the next turn
     messages.append({"role": "user", "content": tool_results})
-    turn += 1
+    
     print(f"\n=== Entering turn {turn} ===\n")
 
 else:
-    print("⚠️ Reached maximum turn limit, task may not be completed. Please simplify your request and try again.")
+    if last_plan is not None:
+        print("\nfinal answer (max turns reached, showing best plan so far):\n", last_plan)
+    else:
+        print("⚠️ Reached maximum turn limit without a valid plan. Please simplify your request.")
 
