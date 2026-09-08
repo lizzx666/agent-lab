@@ -162,10 +162,15 @@ max_turns = 8
 last_plan = None
 review_attempts = 0
 max_reviews = 2        # Limit the number of review cycles to avoid infinite loops
-
+budget_validated = False
+force_submit = False
 
 while turn < max_turns:
     turn +=1
+    if force_submit:
+        tool_choice_param = {"type": "tool", "name": "submit_plan"}
+    else:
+        tool_choice_param = {"type": "auto"}
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1000,
@@ -175,16 +180,24 @@ while turn < max_turns:
             "If the validation feedback indicates exceeding the budget, please adjust the plan (choose cheaper hotels or reduce the number of restaurants) and resubmit until it passes."
             "After passing validation, organize the final plan into a clear English response for the user."
             "If the user does not specify a budget, please ask for it before planning."
-            "Be strict: unless the plan is truly excellent, you must list at least one concrete issue and NOT reply APPROVED."
+            #"Be strict: unless the plan is truly excellent, you must list at least one concrete issue and NOT reply APPROVED."
 
         ),
+
         tools=tools,
+        tool_choice=tool_choice_param,
         messages=messages,
     )
     print("stop_reason:", response.stop_reason)
 
    # Model no longer needs tools -> print final answer and break
     if response.stop_reason != "tool_use":
+        if not budget_validated:
+            force_submit = True
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": "You must call submit_plan to validate the budget before presenting the plan."})
+            continue  # Go to next turn to force submit_plan
+
         plan_text = ""
         for block in response.content:
             if block.type == "text":
@@ -206,6 +219,7 @@ while turn < max_turns:
             print("\n  → Reviewer flagged issues, revising...\n", review_text)
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": f"A reviewer raised these issues, please revise the plan:\n{review_text}"})
+            budget_validated = False
             
             continue
 
@@ -219,6 +233,7 @@ while turn < max_turns:
     for block in response.content:
         if block.type == "tool_use":
             if block.name == "submit_plan":
+                force_submit = False  # Reset force_submit after successful evaluation   
                 print("  → submit_plan was called! Starting budget validation...")   
                 plan = block.input
                 budget = plan.get("budget")   #use .get() so a missing key returns None instead of raising KeyError
@@ -228,7 +243,10 @@ while turn < max_turns:
                     print(f"  → Model extracted budget: £{budget}")
                     passed, feedback = evaluate_plan(plan, budget)
                     print(f"  → Validation result: {feedback}")
-                    content = feedback                    
+                    content = feedback
+                    if passed:
+                        budget_validated = True
+                                   
 
             else:
                 # This is a "data lookup" type tool → execute function as before
