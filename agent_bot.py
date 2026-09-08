@@ -116,17 +116,32 @@ def review_plan(plan_text):
     review_response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=500,
+        #temperature=0,
+        # system=(
+        #     # "You are a critical travel plan reviewer. Assess whether the plan is "
+        #     # "well-balanced and reasonable — consider location mix (are the hotel and "
+        #     # "restaurants sensibly located?), spending balance, and overall experience. "
+        #     # "If the plan is good, reply with exactly 'APPROVED'. "
+        #     # "Otherwise, list the specific issues concisely so they can be fixed."
+
+        # ),
         system=(
-            "You are a critical travel plan reviewer. Assess whether the plan is "
-            "well-balanced and reasonable — consider location mix (are the hotel and "
-            "restaurants sensibly located?), spending balance, and overall experience. "
-            "If the plan is good, reply with exactly 'APPROVED'. "
-            "Otherwise, list the specific issues concisely so they can be fixed."
+            "You are a strict travel plan reviewer. Check the plan against these criteria:\n"
+            "1. LOCATION: FAIL if any restaurant is more than 3 miles from the hotel AND the plan "
+            "does not mention transport time/cost. Otherwise PASS.\n"
+            "2. BUDGET REALISM: FAIL if the budget breakdown lists only hotel and food prices "
+            "without transport or service charges. Otherwise PASS.\n\n"
+            "For EACH criterion, state PASS or FAIL with a one-line reason. "
+            "Then end with a final line in the exact format: "
+            "'VERDICT: APPROVED' (if all pass) or 'VERDICT: NEEDS_REVISION' (otherwise)."
         ),
+
+
         messages=[{"role": "user", "content": f"Review this travel plan:\n\n{plan_text}"}],
     )
     review_text = review_response.content[0].text
-    passed = "APPROVED" in review_text     # simple signal-word check
+    passed = "VERDICT: APPROVED" in review_text
+    #passed = "APPROVED" in review_text     # simple signal-word check
     return passed, review_text
 
 # A mapping: name -> actual function, used to dispatch tool calls in the loop
@@ -174,6 +189,8 @@ while turn < max_turns:
         for block in response.content:
             if block.type == "text":
                 plan_text += block.text + "\n"
+        
+
         passed, review_text = review_plan(plan_text)
         last_plan = plan_text 
         if passed:
