@@ -1,7 +1,7 @@
 [project]
 name = "agent-lab"
 version = "0.1.0"
-description = "Add your description here"
+description = "A tool-using travel planning agent, built by hand on the Anthropic API and again with LangGraph"
 readme = "README.md"
 authors = [
     { name = "lizzx666", email = "shisanyue58@gmail.com" }
